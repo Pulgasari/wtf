@@ -22,7 +22,7 @@ test('handles regex literals in args', () => {
 test('parses property paths and explicit methods', () => {
   assert.deepEqual(parse('.a.b.c()'), [
     { type: 'prop', path: ['a', 'b'], start: 0 },
-    { type: 'method', name: 'c', args: '', start: 0 },
+    { type: 'method', name: 'c', args: '', body: null, start: 0 },
   ]);
 });
 
@@ -30,4 +30,32 @@ test('reports position on syntax errors', () => {
   assert.throws(() => parse('trim split(","'), (error) => error instanceof LsdSyntaxError && error.pos === 10);
   assert.throws(() => parse('trim#'), LsdSyntaxError);
   assert.throws(() => parse('1abc'), LsdSyntaxError);
+});
+
+test('parses sub-pipelines recursively', () => {
+  const [map] = parse('map[trim split(" ") filter[.length]](1)');
+  assert.equal(map.args, '1');
+  assert.deepEqual(
+    map.body.map((step) => step.name),
+    ['trim', 'split', 'filter'],
+  );
+  assert.equal(map.body[2].body[0].type, 'prop');
+});
+
+test('keeps brackets inside sub-pipeline args', () => {
+  const [map] = parse("map[split(']') first]");
+  assert.equal(map.body[0].args, "']'");
+});
+
+test('parses library steps', () => {
+  assert.deepEqual(parse('lodash::chunk(2) R::map[upper]').map(({ type, lib, name }) => [type, lib, name]), [
+    ['lib', 'lodash', 'chunk'],
+    ['lib', 'R', 'map'],
+  ]);
+});
+
+test('reports positions inside sub-pipelines', () => {
+  assert.throws(() => parse('map[trim #]'), (error) => error.pos === 9);
+  assert.throws(() => parse('map[trim'), /unterminated sub-pipeline/);
+  assert.throws(() => parse('map[a][b]'), /duplicate sub-pipeline/);
 });

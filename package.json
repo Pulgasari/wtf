@@ -16,6 +16,10 @@
     "./vite": {
       "types": "./types/vite.d.ts",
       "default": "./src/vite.js"
+    },
+    "./presets/*": {
+      "types": "./types/presets.d.ts",
+      "default": "./src/lsd/presets/*.js"
     }
   },
   "files": [
@@ -26,11 +30,15 @@
     "test": "node --test"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "acorn": "^8.19.0",
     "acorn-walk": "^8.3.5",
     "magic-string": "^1.4.3"
+  },
+  "devDependencies": {
+    "lodash-es": "^4.18.1",
+    "ramda": "^0.32.0"
   }
 }

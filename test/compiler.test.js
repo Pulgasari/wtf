@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { compile, LsdCompileError } from '../src/compiler/index.js';
 import lsdPlugin from '../src/vite.js';
+import lodashPreset from '../src/lsd/presets/lodash.js';
 
 const src = (...lines) => lines.join('\n');
 
@@ -79,4 +80,54 @@ test('vite plugin filters ids', () => {
   assert.equal(plugin.transform(code, '/app/node_modules/x/index.js'), null);
   assert.equal(plugin.transform(code, '/app/style.css'), null);
   assert.equal(plugin.transform.call({ warn() {} }, code, '/app/src/a.js?v=1').code, 'export const f = (v) => v.trim();');
+});
+
+test('library steps become imports', () => {
+  const { code } = compile(
+    src(
+      '#!/usr/bin/env node',
+      "import { lsd } from 'wtf.js';",
+      "const f = lsd.fn('trim lodash::kebabCase R::reverse _::kebabCase');",
+      "const g = lsd.fn('chunk(2)');",
+    ),
+    { ops: lodashPreset },
+  );
+  assert.equal(
+    code,
+    src(
+      '#!/usr/bin/env node',
+      "import { kebabCase as __lsd_lodash_kebabCase, chunk as __lsd_lodash_chunk } from 'lodash-es';",
+      "import { reverse as __lsd_ramda_reverse } from 'ramda';",
+      'const f = (v) => __lsd_lodash_kebabCase(__lsd_ramda_reverse(__lsd_lodash_kebabCase(v.trim())));',
+      'const g = (v) => __lsd_lodash_chunk(v, 2);',
+    ),
+  );
+});
+
+test('library locals avoid collisions and support per-function modules', () => {
+  const { code } = compile(
+    src("import { lsd } from 'wtf.js';", 'const __lsd_lodash_chunk = 1;', "const f = lsd.fn('lodash::chunk(2)');"),
+    { libs: { lodash: { module: (name) => `lodash/${name}.js`, named: false } } },
+  );
+  assert.equal(
+    code,
+    src(
+      "import ___lsd_lodash_chunk from 'lodash/chunk.js';",
+      'const __lsd_lodash_chunk = 1;',
+      'const f = (v) => ___lsd_lodash_chunk(v, 2);',
+    ),
+  );
+});
+
+test('unknown libraries fail the build', () => {
+  assert.throws(() => compile(src("import { lsd } from 'wtf.js';", "lsd.fn('nope::x');")), /unknown library 'nope'/);
+});
+
+test('compiled library code runs', async () => {
+  const { code } = compile(
+    src("import { lsd } from 'wtf.js';", "export default lsd.fn('map[trim] lodash::uniq R::sortBy[lower]');"),
+    { libs: { lodash: { module: import.meta.resolve('lodash-es') }, ramda: { module: import.meta.resolve('ramda') } } },
+  );
+  const compiled = (await import(`data:text/javascript,${encodeURIComponent(code)}`)).default;
+  assert.deepEqual(compiled([' b', 'A ', 'b']), ['A', 'b']);
 });

@@ -4,9 +4,10 @@
 import { parse as parseJs, parseExpressionAt } from 'acorn';
 import { ancestor, full } from 'acorn-walk';
 import MagicString from 'magic-string';
-import { parse } from '../lsd/parse.js';
+import { parse, LsdSyntaxError } from '../lsd/parse.js';
 import { generate } from '../lsd/generate.js';
 import { builtins, createVocabulary } from '../lsd/ops.js';
+import { createAdapters, resolveAdapter } from '../lsd/libs.js';
 
 const ACORN = { ecmaVersion: 'latest', sourceType: 'module', locations: true, allowHashBang: true };
 
@@ -42,7 +43,7 @@ export class LsdCompileError extends Error {
  *   null if the source does not import `lsd` from `module`.
  */
 export function compile(source, options = {}) {
-  const { filename, ops, module = 'wtf.js', sourcemap = true, onWarn = () => {} } = options;
+  const { filename, ops, libs, module = 'wtf.js', sourcemap = true, onWarn = () => {} } = options;
 
   if (!source.includes(module)) return null;
 
@@ -52,6 +53,7 @@ export function compile(source, options = {}) {
 
   const locals = new Set(imports.map((entry) => entry.local));
   const vocabulary = createVocabulary(builtins, ops);
+  const libImports = createLibImports(createAdapters(libs), ast);
   const out = new MagicString(source);
   let compiled = 0;
 
@@ -70,7 +72,7 @@ export function compile(source, options = {}) {
 
       let fnCode;
       try {
-        fnCode = generate(parse(spec), { vocabulary, spec });
+        fnCode = generate(parse(spec), { vocabulary, spec, lib: libImports.resolve });
         validate(fnCode);
       } catch (error) {
         throw new LsdCompileError(error.message, { filename, loc: node.loc.start, cause: error });
@@ -87,6 +89,12 @@ export function compile(source, options = {}) {
   if (!compiled) return null;
 
   removeUnusedImports(ast, imports, out);
+  if (libImports.size) {
+    // after a hashbang line, otherwise at the very top
+    const at = source.startsWith('#!') ? source.indexOf('\n') + 1 : 0;
+    if (at > 0) out.appendLeft(at, libImports.code());
+    else out.prepend(libImports.code());
+  }
 
   return {
     code: out.toString(),
@@ -94,6 +102,61 @@ export function compile(source, options = {}) {
     compiled,
   };
 }
+
+// collects `lib::name` steps and turns them into import declarations with collision-free locals
+function createLibImports(adapters, ast) {
+  const taken = new Set();
+  full(ast, (node) => {
+    if (node.type === 'Identifier') taken.add(node.name);
+  });
+
+  const entries = new Map();
+
+  const resolve = (step, ctx) => {
+    const resolved = resolveAdapter(adapters, step.lib);
+    if (!resolved) {
+      throw new LsdSyntaxError(`unknown library '${step.lib}', configure it via the 'libs' option`, ctx.spec, step.start);
+    }
+    const { key, adapter } = resolved;
+    if (!adapter.module) {
+      throw new LsdSyntaxError(`library '${key}' has no module configured`, ctx.spec, step.start);
+    }
+
+    const specifier = typeof adapter.module === 'function' ? adapter.module(step.name) : adapter.module;
+    const id = `${specifier}#${adapter.named ? step.name : 'default'}`;
+    let entry = entries.get(id);
+    if (!entry) {
+      let local = `__lsd_${key}_${step.name}`;
+      while (taken.has(local)) local = `_${local}`;
+      taken.add(local);
+      entry = { specifier, name: step.name, named: adapter.named, local };
+      entries.set(id, entry);
+    }
+    return { ref: entry.local, adapter };
+  };
+
+  // one declaration per module: `import { a as __lsd_x_a, b as __lsd_x_b } from 'x';`
+  const code = () => {
+    const named = new Map();
+    const defaults = [];
+    for (const { specifier, name, named: isNamed, local } of entries.values()) {
+      if (!isNamed) defaults.push(`import ${local} from ${quote(specifier)};`);
+      else named.set(specifier, [...(named.get(specifier) ?? []), `${name} as ${local}`]);
+    }
+    const declarations = [...named].map(([specifier, list]) => `import { ${list.join(', ')} } from ${quote(specifier)};`);
+    return `${[...declarations, ...defaults].join('\n')}\n`;
+  };
+
+  return {
+    resolve,
+    code,
+    get size() {
+      return entries.size;
+    },
+  };
+}
+
+const quote = (value) => `'${value.replace(/[\\']/g, '\\$&')}'`;
 
 // `import { lsd } from 'wtf.js'` and `import { lsd as x } from 'wtf.js'`
 function findImports(ast, module) {

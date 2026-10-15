@@ -3,18 +3,25 @@
 the foundation is deliberately small: `spec -> steps -> expression source`, one generator shared by
 compiler and runtime. everything below builds on that pipeline without changing its core.
 
-## 1. sub-pipelines (the biggest lever)
+## 1. sub-pipelines (done)
 
-today args are raw javascript, so `.map((s) => s.trim())` still means writing the lambda yourself.
-let ops declare that their args are a spec instead of code:
+`map[trim lower]`, `sortBy[.name lower]`, `lodash::groupBy[.type]`. a `[spec]` suffix is parsed recursively
+and passed as a unary arrow callback. open points:
 
-```js
-lsd.fn('split(",") map[trim lower] compact unique');
-lsd.fn('filter[.active] sortBy[.name lower] map[.id]');
-```
+- callbacks with more than one param (`reduce`), e.g. `reduce[(acc, x) => ...]` or named params `[acc x: ...]`.
+- `it` / `$` placeholder to use the value somewhere other than as the receiver: `map[it + 'px']`.
 
-`[...]` is parsed recursively and generated as a nested arrow. this turns the flat pipe into a small
-combinator language and covers most of the "map, filter, sort, pick" helpers people write daily.
+## 1b. libraries (done)
+
+`lib::name` resolves to a named import (build) or a registered object (runtime). presets map lsd names
+onto library functions via macros, so the vocabulary grows without lsd owning the code. next steps:
+
+- implicit lookup: `lsd({ prefer: ['lodash'] })` resolves unknown names against the library exports
+  (the compiler can import the module at build time and check `name in exports`) before falling back
+  to a method call. explicit `lib::` stays available for disambiguation.
+- more presets: `es-toolkit` (smaller, modern), `remeda`, `ramda`, date libraries (`date-fns::format('yyyy')`).
+- ops that are just helper imports from wtf.js itself, for the few things no library does well.
+- export checks at build time with a "did you mean" for typos (`lodash::kebabcase`).
 
 ## 2. shape builders
 
@@ -95,7 +102,7 @@ the build only ever reads the lockfile. new or changed specs require an explicit
 
 ## suggested order
 
-1. sub-pipelines `[...]` (unlocks most real use cases)
+1. ~~sub-pipelines `[...]`~~, ~~libraries + presets~~
 2. tagged templates for captures (fixes the only semantic gap between runtime and build)
 3. `lsd.is` / `lsd.cmp`
 4. shared config + strict mode

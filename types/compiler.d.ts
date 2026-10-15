@@ -1,9 +1,11 @@
-import type { LsdOpLike } from './index.js';
+import type { LsdAdapterLike, LsdOpLike } from './index.js';
 
 export interface CompileOptions {
   filename?: string;
   /** additional ops, merged over the builtins */
   ops?: Record<string, LsdOpLike>;
+  /** library adapters for `lib::name` steps, merged over the builtins (lodash, underscore, ramda, esToolkit, remeda) */
+  libs?: Record<string, LsdAdapterLike>;
   /** module specifier to look for, default 'wtf.js' */
   module?: string;
   sourcemap?: boolean;
