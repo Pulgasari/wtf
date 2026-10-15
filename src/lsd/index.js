@@ -3,7 +3,7 @@
 // both paths share parse + generate, so the semantics are identical.
 
 import { joinTemplate, LsdSyntaxError } from './parse.js';
-import { generateKind, explain as explainSpec } from './generate.js';
+import { generateKind, explain as explainSpec } from './generate/index.js';
 import { createVocabularies } from './ops.js';
 import { normalizeOp } from './vocabulary.js';
 import { createAdapters, resolveAdapter, didYouMean } from './libs.js';
@@ -163,7 +163,7 @@ export const lsd = {
 };
 
 export { parse, joinTemplate, LsdSyntaxError } from './parse.js';
-export { generate, generateKind, KINDS } from './generate.js';
+export { generate, generateKind, KINDS } from './generate/index.js';
 export { builtins, createVocabulary } from './ops.js';
 export { predicates as builtinPredicates } from './predicates.js';
 export { adapters, createAdapters } from './libs.js';

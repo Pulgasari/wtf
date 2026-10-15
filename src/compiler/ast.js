@@ -1,7 +1,7 @@
 // ast helpers for the compiler: matching lsd calls, reading static values, placing arrows.
 
 import { full } from 'acorn-walk';
-import { KINDS } from '../lsd/generate.js';
+import { KINDS } from '../lsd/generate/index.js';
 
 // parents in which an arrow function can stand without parens
 const BARE_ARROW_OK = {

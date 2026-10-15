@@ -5,7 +5,7 @@ import { parse as parseJs, parseExpressionAt } from 'acorn';
 import { ancestor } from 'acorn-walk';
 import MagicString from 'magic-string';
 import { joinTemplate } from '../lsd/parse.js';
-import { generateKind } from '../lsd/generate.js';
+import { generateKind } from '../lsd/generate/index.js';
 import { createVocabularies } from '../lsd/ops.js';
 import { guess } from '../lsd/guess.js';
 import { createAdapters } from '../lsd/libs.js';
