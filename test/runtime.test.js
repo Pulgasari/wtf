@@ -145,3 +145,7 @@ test('prefer and typo hints', () => {
   }
   assert.equal(lsd.code('camelCase'), '(it) => it.camelCase()');
 });
+
+test('inherited object keys are no libraries', () => {
+  assert.throws(() => lsd.code('toString::x'), /unknown library 'toString'/);
+});

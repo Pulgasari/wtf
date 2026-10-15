@@ -79,10 +79,7 @@ export function parseRange(source, from, to) {
     return source.slice(start, i);
   };
 
-  const group = (open) => {
-    const end = scanGroup(source, open, to, fail);
-    return { source, from: open + 1, to: end };
-  };
+  const group = (open) => ({ source, from: open + 1, to: findClose(source, open, to) });
 
   // optional `(args)` and `[spec]` / `?[checks]` suffixes, at most one of each
   const readSuffixes = (step) => {
@@ -173,41 +170,26 @@ export function parseRange(source, from, to) {
 // `|` never matches inside `||`. returns trimmed ranges.
 export function splitTop(source, from, to, separator) {
   const parts = [];
-  const fail = (message, pos) => {
-    throw new LsdSyntaxError(message, source, pos);
-  };
   let start = from;
   let prev = ',';
 
   for (let i = from; i < to; i++) {
     const ch = source[i];
-
-    if (ch === '"' || ch === "'" || ch === '`') {
-      i = skipQuoted(source, i, to, ch, fail);
+    const literalEnd = skipLiteral(source, i, to, prev);
+    if (literalEnd !== -1) {
+      i = literalEnd;
       prev = ch;
-      continue;
-    }
-    if (ch === '/' && REGEX_PREFIX.has(prev)) {
-      i = skipRegex(source, i, to, fail);
-      prev = '/';
-      continue;
-    }
-    if (CLOSE[ch]) {
-      i = scanGroup(source, i, to, fail);
+    } else if (CLOSE[ch]) {
+      i = findClose(source, i, to);
       prev = CLOSE[ch];
-      continue;
-    }
-    if (
-      source.startsWith(separator, i) &&
-      !(separator === '|' && (source[i + 1] === '|' || source[i - 1] === '|'))
-    ) {
+    } else if (source.startsWith(separator, i) && !(separator === '|' && (source[i + 1] === '|' || source[i - 1] === '|'))) {
       parts.push(trimRange(source, start, i));
       i += separator.length - 1;
       start = i + 1;
       prev = ',';
-      continue;
+    } else if (!SPACE.test(ch)) {
+      prev = ch;
     }
-    if (!SPACE.test(ch)) prev = ch;
   }
 
   parts.push(trimRange(source, start, to));
@@ -260,28 +242,22 @@ export function parseTupleItems({ source, from, to }) {
 
 // returns the index of the bracket matching the one at `open`.
 // aware of strings, template literals and regex literals, so `split(') ')` works.
-function scanGroup(source, open, to, fail) {
+export function findClose(source, open, to) {
   const stack = [];
   let prev = source[open];
 
   for (let i = open; i < to; i++) {
     const ch = source[i];
-
-    if (ch === '"' || ch === "'" || ch === '`') {
-      i = skipQuoted(source, i, to, ch, fail);
+    const literalEnd = skipLiteral(source, i, to, prev);
+    if (literalEnd !== -1) {
+      i = literalEnd;
       prev = ch;
-      continue;
-    }
-
-    if (ch === '/' && REGEX_PREFIX.has(prev)) {
-      i = skipRegex(source, i, to, fail);
-      prev = '/';
       continue;
     }
 
     if (CLOSE[ch]) stack.push(CLOSE[ch]);
     else if (ch === ')' || ch === ']' || ch === '}') {
-      if (stack.pop() !== ch) fail(`unbalanced '${ch}'`, i);
+      if (stack.pop() !== ch) throw new LsdSyntaxError(`unbalanced '${ch}'`, source, i);
       if (!stack.length) return i;
     }
 
@@ -289,30 +265,35 @@ function scanGroup(source, open, to, fail) {
   }
 
   const what = { '(': 'argument list', '[': 'sub-pipeline', '{': 'object' }[source[open]];
-  return fail(`unterminated ${what}`, open);
+  throw new LsdSyntaxError(`unterminated ${what}`, source, open);
 }
 
-function skipQuoted(source, start, to, quote, fail) {
-  for (let i = start + 1; i < to; i++) {
-    if (source[i] === '\\') i++;
-    else if (source[i] === quote) return i;
-  }
-  return fail('unterminated string', start);
-}
-
-function skipRegex(source, start, to, fail) {
-  let inClass = false;
-  for (let i = start + 1; i < to; i++) {
-    const ch = source[i];
-    if (ch === '\\') i++;
-    else if (ch === '[') inClass = true;
-    else if (ch === ']') inClass = false;
-    else if (ch === '/' && !inClass) {
-      while (i + 1 < to && /[a-z]/.test(source[i + 1])) i++;
-      return i;
+// a string, template or regex literal starting at `start` -> index of its last char, otherwise -1.
+// `/` only starts a regex after an operator-like char (`prev`), otherwise it is a division.
+function skipLiteral(source, start, to, prev) {
+  const ch = source[start];
+  if (ch === '"' || ch === "'" || ch === '`') {
+    for (let i = start + 1; i < to; i++) {
+      if (source[i] === '\\') i++;
+      else if (source[i] === ch) return i;
     }
+    throw new LsdSyntaxError('unterminated string', source, start);
   }
-  return fail('unterminated regex', start);
-}
 
-export { scanGroup as _scanGroup };
+  if (ch === '/' && REGEX_PREFIX.has(prev)) {
+    let inClass = false;
+    for (let i = start + 1; i < to; i++) {
+      const c = source[i];
+      if (c === '\\') i++;
+      else if (c === '[') inClass = true;
+      else if (c === ']') inClass = false;
+      else if (c === '/' && !inClass) {
+        while (i + 1 < to && /[a-z]/.test(source[i + 1])) i++;
+        return i;
+      }
+    }
+    throw new LsdSyntaxError('unterminated regex', source, start);
+  }
+
+  return -1;
+}

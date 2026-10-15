@@ -9,18 +9,18 @@ import { normalizeOp } from './vocabulary.js';
 import { createAdapters, resolveAdapter, didYouMean } from './libs.js';
 import { guess as search } from './guess.js';
 
+// --- registry -----------------------------------------------------------------------------------
+
 const { vocabulary, predicates } = createVocabularies();
 const adapterConfig = {};
 let adapters = createAdapters();
 let preferred = [];
 // adapter key -> library object, passed into generated functions as `$libs`
 const libs = Object.create(null);
-// `${kind}:${spec}` -> function, template strings -> factory (per kind)
-let cache = new Map();
-let templates = new WeakMap();
 
 const isFn = (target, name) => Object.hasOwn(target, name) && typeof target[name] === 'function';
 const functionNames = (target) => Object.keys(target).filter((key) => typeof target[key] === 'function');
+const libRef = ({ key, adapter }, name) => ({ ref: `$libs.${key}.${name}`, adapter });
 
 // at runtime a `lib::name` step reads the function from the object registered via `use`
 function resolveLib(step) {
@@ -34,17 +34,14 @@ function resolveLib(step) {
   if (!isFn(target, step.name)) {
     fail(`'${step.name}' is not a function of '${resolved.key}'${didYouMean(step.name, functionNames(target))}`);
   }
-  return { ref: `$libs.${resolved.key}.${step.name}`, adapter: resolved.adapter };
+  return libRef(resolved, step.name);
 }
 
 // names outside the vocabulary are looked up in the preferred libraries, in order
 function resolveImplicit(step) {
   for (const name of preferred) {
     const resolved = resolveAdapter(adapters, name);
-    const target = resolved && libs[resolved.key];
-    if (target && isFn(target, step.name)) {
-      return { ref: `$libs.${resolved.key}.${step.name}`, adapter: resolved.adapter };
-    }
+    if (resolved && libs[resolved.key] && isFn(libs[resolved.key], step.name)) return libRef(resolved, step.name);
   }
   return null;
 }
@@ -56,33 +53,46 @@ function source(kind, spec, captures = 0) {
   return generateKind(kind, spec, options(captures));
 }
 
-// every factory works with a string spec or as tagged template (interpolations are captured)
-function factory(kind) {
-  return function lsdFactory(spec, ...values) {
-    if (Array.isArray(spec) && Array.isArray(spec.raw)) {
-      let byKind = templates.get(spec);
-      if (!byKind) templates.set(spec, (byKind = {}));
-      if (!byKind[kind]) {
-        const names = values.map((_, index) => `$${index}`);
-        byKind[kind] = new Function('$libs', ...names, `return ${source(kind, joinTemplate(spec.raw, kind), values.length)}`);
-      }
-      return byKind[kind](libs, ...values);
-    }
+// --- compile cache ------------------------------------------------------------------------------
 
-    const key = `${kind}:${spec}`;
-    let compiled = cache.get(key);
-    if (!compiled) {
-      compiled = new Function('$libs', `return ${source(kind, spec)}`)(libs);
-      cache.set(key, compiled);
-    }
-    return compiled;
-  };
-}
+// `${kind}:${spec}` -> function
+let specs = new Map();
+// template strings -> { [kind]: factory($libs, ...captures) }
+let templates = new WeakMap();
 
+// configuration changes invalidate everything generated so far
 function reset() {
-  cache = new Map();
+  specs = new Map();
   templates = new WeakMap();
 }
+
+// one map lookup on the hot path, factories are called a lot at runtime
+function compileSpec(kind, spec) {
+  const key = `${kind}:${spec}`;
+  let compiled = specs.get(key);
+  if (!compiled) {
+    compiled = new Function('$libs', `return ${source(kind, spec)}`)(libs);
+    specs.set(key, compiled);
+  }
+  return compiled;
+}
+
+// interpolations become params of a factory, so every evaluation captures the current values
+function compileTemplate(kind, strings, values) {
+  if (!templates.has(strings)) templates.set(strings, {});
+  const byKind = templates.get(strings);
+  if (!byKind[kind]) {
+    const names = values.map((_, index) => `$${index}`);
+    byKind[kind] = new Function('$libs', ...names, `return ${source(kind, joinTemplate(strings.raw, kind), values.length)}`);
+  }
+  return byKind[kind](libs, ...values);
+}
+
+// every factory works with a string spec or as tagged template
+const factory = (kind) => (spec, ...values) =>
+  Array.isArray(spec) && Array.isArray(spec.raw) ? compileTemplate(kind, spec, values) : compileSpec(kind, spec);
+
+// --- configuration ------------------------------------------------------------------------------
 
 function defineIn(target, bodyKind, name, value) {
   const entries = typeof name === 'string' ? [[name, value]] : Object.entries(name);
@@ -92,9 +102,7 @@ function defineIn(target, bodyKind, name, value) {
 
 // define(name, op) or define({ name: op, ... }).
 // NOTE: the compiler does not see runtime definitions, pass the same ops via its `ops` option.
-function define(name, value) {
-  defineIn(vocabulary, 'fn', name, value);
-}
+const define = (name, value) => defineIn(vocabulary, 'fn', name, value);
 
 // registers a library object for `name::fn` steps.
 // use('lodash', _) for builtin adapters, use('mine', lib, { order: 'data-last' }) for custom ones.
@@ -103,8 +111,7 @@ function use(name, lib, adapter) {
     adapterConfig[name] = adapter ?? {};
     adapters = createAdapters(adapterConfig);
   }
-  const { key } = resolveAdapter(adapters, name);
-  libs[key] = lib;
+  libs[resolveAdapter(adapters, name).key] = lib;
   reset();
 }
 
@@ -115,45 +122,37 @@ function prefer(...names) {
   reset();
 }
 
+// --- extras -------------------------------------------------------------------------------------
+
+const fn = factory('fn');
+
 // lsd.$.trim.lower -> lsd.fn('trim lower'). only argument-free steps, the call runs the function.
 // `then` stays undefined so the proxy is not mistaken for a thenable.
 function chainProxy(steps) {
   return new Proxy(function lsdChain() {}, {
-    get(_target, key) {
-      if (typeof key === 'symbol' || key === 'then') return undefined;
-      return chainProxy([...steps, key]);
-    },
-    apply(_target, _this, args) {
-      return fn(steps.join(' '))(...args);
-    },
+    get: (_target, key) => (typeof key === 'symbol' || key === 'then' ? undefined : chainProxy([...steps, key])),
+    apply: (_target, _this, args) => fn(steps.join(' '))(...args),
   });
 }
 
-const fn = factory('fn');
-const is = Object.assign(factory('is'), {
-  // custom checks, same shapes as define, macros use the is grammar
-  define: (name, value) => defineIn(predicates, 'is', name, value),
-});
-
 // programming by example. the compiler runs the search at build time and inlines the result.
-function guessSpec(examples, options) {
-  const spec = search(examples, (step) => fn(step), options);
+function guessSpec(examples, guessOptions) {
+  const spec = search(examples, fn, guessOptions);
   if (spec === null) throw new Error('lsd.guess: no pipeline found for these examples, give me a hint');
   return spec;
 }
 
-const guess = Object.assign((examples, options) => fn(guessSpec(examples, options)), { spec: guessSpec });
-
 export const lsd = {
   fn,
-  is,
+  // custom checks via lsd.is.define, same shapes as define, macros use the is grammar
+  is: Object.assign(factory('is'), { define: (name, value) => defineIn(predicates, 'is', name, value) }),
   cmp: factory('cmp'),
   match: factory('match'),
   fmt: factory('fmt'),
   parse: factory('parse'),
   check: factory('check'),
   $: chainProxy([]),
-  guess,
+  guess: Object.assign((examples, guessOptions) => fn(guessSpec(examples, guessOptions)), { spec: guessSpec }),
   code: (spec, kind = 'fn') => source(kind, spec),
   // { code, steps: [{ step, expr }] }: what every top-level step of a fn spec turned into
   explain: (spec) => explainSpec(spec, options()),

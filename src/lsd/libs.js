@@ -5,14 +5,14 @@
 //   order    'data-first': fn(value, callback, ...args)   lodash, underscore, es-toolkit, remeda
 //            'data-last':  fn(callback, ...args, value)   ramda
 //
-// a string value is an alias for another adapter.
+// a string value is an alias for another adapter. defaults: named, data-first.
 
 export const adapters = {
-  lodash: { module: 'lodash-es', named: true, order: 'data-first' },
-  underscore: { module: 'underscore', named: true, order: 'data-first' },
-  ramda: { module: 'ramda', named: true, order: 'data-last' },
-  esToolkit: { module: 'es-toolkit', named: true, order: 'data-first' },
-  remeda: { module: 'remeda', named: true, order: 'data-first' },
+  lodash: { module: 'lodash-es' },
+  underscore: { module: 'underscore' },
+  ramda: { module: 'ramda', order: 'data-last' },
+  esToolkit: { module: 'es-toolkit' },
+  remeda: { module: 'remeda' },
   _: 'lodash',
   R: 'ramda',
 };
@@ -36,17 +36,16 @@ export function createAdapters(overrides = {}) {
   return merged;
 }
 
-// follows aliases, returns { key, adapter } or null
+// follows aliases, returns { key, adapter } or null. own properties only, `toString::x` is no library.
 export function resolveAdapter(adapters, name) {
   const seen = new Set();
   let key = name;
-  while (typeof adapters[key] === 'string') {
+  while (Object.hasOwn(adapters, key) && typeof adapters[key] === 'string') {
     if (seen.has(key)) throw new TypeError(`lsd: circular library alias '${name}'`);
     seen.add(key);
     key = adapters[key];
   }
-  const adapter = adapters[key];
-  return adapter ? { key, adapter } : null;
+  return Object.hasOwn(adapters, key) ? { key, adapter: adapters[key] } : null;
 }
 
 // argument list for a library call in the adapter's order

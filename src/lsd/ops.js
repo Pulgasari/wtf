@@ -3,8 +3,8 @@
 import { defineOp as op, createVocabularyOf } from './vocabulary.js';
 import { predicates } from './predicates.js';
 
-// three-way compare used by sortBy
-const CMP = '(a < b ? -1 : a > b ? 1 : 0)';
+// three-way compare used by sortBy (and lsd.cmp)
+export const CMP = '(x, y) => (x < y ? -1 : x > y ? 1 : 0)';
 
 export const builtins = {
   // strings
@@ -34,11 +34,12 @@ export const builtins = {
   sum: op((x) => `${x}.reduce((a, b) => a + b, 0)`),
   // arrays and strings, unicode aware
   reverse: op((x) => `(typeof ${x} === 'string' ? [...${x}].reverse().join('') : ${x}.toReversed())`, { ref: true }),
+  // keys are computed once per item (decorate, sort, undecorate), not once per comparison
   sortBy: op(
-    (x, _args, { body, bind }) => {
-      if (!body) return `${x}.toSorted((a, b) => ${CMP})`;
+    (x, _args, { body, bind, helper }) => {
+      if (!body) return `${x}.toSorted(${helper(CMP)})`;
       const key = bind(body);
-      return `${x}.toSorted((a, b) => { a = ${key}(a); b = ${key}(b); return ${CMP}; })`;
+      return `${x}.map((v) => [${key}(v), v]).sort((a, b) => ${helper(CMP)}(a[0], b[0])).map((p) => p[1])`;
     },
     { body: 'optional' },
   ),

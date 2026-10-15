@@ -111,7 +111,7 @@ native one-liners, no dependencies:
 | misc     | `or(fallback)` `log`                                      |
 | grammars | `order[cmp]` `is[checks]` `when[cases]` `fmt[text]`       |
 
-array ops never mutate their input (`reverse` -> `toReversed`, `sortBy` -> `toSorted`).
+array ops never mutate their input (`reverse` -> `toReversed`, `sortBy` sorts a copy and computes each key once).
 
 ### builders and safe mode
 

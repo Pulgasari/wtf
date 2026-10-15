@@ -1,9 +1,9 @@
 // lsd.cmp: comma separated sort keys, each a pipeline with optional asc / desc / natural.
 
 import { parseRange, splitTop } from '../parse.js';
+import { CMP } from '../ops.js';
 import { compileFn, fixedScope, keyword, path, render } from './core.js';
 
-const CMP = '(x, y) => (x < y ? -1 : x > y ? 1 : 0)';
 const NATURAL = "(x, y) => String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' })";
 const MODIFIERS = new Set(['asc', 'desc', 'natural']);
 

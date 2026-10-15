@@ -1,7 +1,7 @@
 // text grammars: lsd.fmt (value -> text) and lsd.parse (text -> object). both read text with
 // `{...}` fields, `{{` / `}}` are literal braces.
 
-import { LsdSyntaxError, parseRange, trimRange, _scanGroup as scanGroup } from '../parse.js';
+import { findClose, parseRange, trimRange } from '../parse.js';
 import { chain, fail, fixedScope, inlineScope, render } from './core.js';
 
 // walks the text, calls literal(char) for plain text and field(range) for `{...}`
@@ -12,9 +12,7 @@ function scanTemplate({ source, from, to }, { literal, field }) {
       literal(ch);
       i++;
     } else if (ch === '{') {
-      const end = scanGroup(source, i, to, (message, pos) => {
-        throw new LsdSyntaxError(message, source, pos);
-      });
+      const end = findClose(source, i, to);
       field(trimRange(source, i + 1, end));
       i = end;
     } else {
