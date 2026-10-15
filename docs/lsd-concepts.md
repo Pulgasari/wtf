@@ -111,8 +111,8 @@ the build only ever reads the lockfile. new or changed specs require an explicit
 
 - `lsd.guess` with types: derive candidates from the example types and allow args from the examples
   (`split` with the most common separator in the input).
-- `lsd.is` as validator with messages: `lsd.check(spec)` returning the failing path instead of `false`.
-- `lsd.parse`: the inverse of `fmt`, `lsd.parse('{name} ({age int})')('bo (30)')` -> `{ name, age }`.
+- ~~`lsd.check(spec)`~~ (done): errors with paths instead of `false`.
+- ~~`lsd.parse`~~ (done): the inverse of `fmt`.
 - `lsd.$` with args via call-before-access: `lsd.$.split(',').map.trim` (needs the build step to
   disambiguate calls, at runtime a call is always the final call).
-- explain mode: `lsd.explain('trim lower')` -> table of steps and the code each one produced.
+- ~~explain mode~~ (done): `lsd.explain('trim lower')`.

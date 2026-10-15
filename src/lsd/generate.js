@@ -6,6 +6,8 @@
 //   cmp    comma separated sort keys + asc/desc/natural lsd.cmp('.age desc, .name natural')
 //   match  `checks -> pipeline` cases separated by `|`  lsd.match('number -> (it * 2) | _ -> str')
 //   fmt    text with `{pipeline}` interpolations        lsd.fmt('{.first} {.last upper}')
+//   parse  the inverse of fmt, text -> object           lsd.parse('{name} ({age int})')
+//   check  is grammar, returns errors with paths        lsd.check('{ name: string filled }')
 //
 // every factory returns the source of an arrow function. sub-grammars nest through bodies:
 // `filter?[...]` is an `is` body, `order[...]` a `cmp` body and so on.
@@ -17,6 +19,7 @@ import {
   parseRange,
   parseTupleItems,
   splitTop,
+  trimRange,
   _scanGroup as scanGroup,
 } from './parse.js';
 import { libCall, didYouMean } from './libs.js';
@@ -29,7 +32,7 @@ const CMP = '(x, y) => (x < y ? -1 : x > y ? 1 : 0)';
 const NATURAL = "(x, y) => String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' })";
 const CMP_MODIFIERS = new Set(['asc', 'desc', 'natural']);
 
-export const KINDS = ['fn', 'is', 'cmp', 'match', 'fmt'];
+export const KINDS = ['fn', 'is', 'cmp', 'match', 'fmt', 'parse', 'check'];
 
 /**
  * @param {object} options
@@ -52,6 +55,17 @@ export function generate(steps, options = {}) {
   return render(compileFn(steps, context(options)));
 }
 
+// the top-level steps of a fn spec with the expression after each one
+export function explain(spec, options = {}) {
+  const trace = [];
+  const code = render(
+    compileFn(parseRange(spec, 0, spec.length), context(options), (step, expr) =>
+      trace.push({ step: step.source.slice(step.start, step.end), expr }),
+    ),
+  );
+  return { code, steps: trace };
+}
+
 function context(options) {
   return {
     vocabulary: options.vocabulary ?? {},
@@ -68,6 +82,8 @@ const KIND = {
   cmp: cmpKind,
   match: matchKind,
   fmt: fmtKind,
+  parse: parseKind,
+  check: checkKind,
 };
 
 // --- scopes -------------------------------------------------------------------------------------
@@ -98,7 +114,7 @@ function functionScope(param, reassign = true) {
 // sub-pipelines evaluated in place (object values, tuple items, fmt interpolations).
 // they share the temps of the enclosing function but must not reassign its param.
 function inlineScope(scope, safe = scope.safe) {
-  return { ...scope, reassign: false, param: scope.param === 'it' ? 'it' : null, safe };
+  return { ...scope, reassign: false, param: scope.param === 'it' ? 'it' : null, safe, trace: null };
 }
 
 function render({ params, lines, expr }) {
@@ -108,7 +124,7 @@ function render({ params, lines, expr }) {
 
 // --- fn -----------------------------------------------------------------------------------------
 
-function compileFn(steps, ctx) {
+function compileFn(steps, ctx, trace = null) {
   let params = ['it'];
   let rest = steps;
   if (steps[0]?.type === 'params') {
@@ -116,7 +132,7 @@ function compileFn(steps, ctx) {
     rest = steps.slice(1);
   }
   const param = params.includes('it') ? 'it' : params[0];
-  const scope = functionScope(param);
+  const scope = { ...functionScope(param), trace };
   const expr = chain(rest, param, scope, ctx);
   return { params, lines: scope.lines, expr };
 }
@@ -129,61 +145,56 @@ function lazy(steps, subject, scope, ctx) {
 }
 
 function chain(steps, start, scope, ctx) {
+  const state = { safe: scope.safe };
   let expr = start;
-  let safe = scope.safe;
-  const dot = () => (safe ? '?.' : '.');
-
   for (const step of expand(steps, ctx.vocabulary, ctx)) {
-    switch (step.type) {
-      case 'safe':
-        safe = true;
-        continue;
-      case 'params':
-        fail('a param list is only allowed at the start of a pipeline', step);
-        break;
-      case 'prop':
-        expr += path(step.path, dot());
-        continue;
-      case 'expr':
-        expr = expression(step, expr, scope);
-        continue;
-      case 'object':
-        expr = buildObject(step, expr, scope, ctx, safe);
-        continue;
-      case 'tuple':
-        expr = buildTuple(step, expr, scope, ctx, safe);
-        continue;
-      case 'lib': {
-        const { ref, adapter } = ctx.lib(step, ctx);
-        expr = libCall(ref, adapter, expr, body(step, null, ctx), step.args);
-        continue;
-      }
+    expr = applyStep(step, expr, state, scope, ctx);
+    scope.trace?.(step, expr);
+  }
+  return expr;
+}
+
+function applyStep(step, expr, state, scope, ctx) {
+  const dot = state.safe ? '?.' : '.';
+
+  switch (step.type) {
+    case 'safe':
+      state.safe = true;
+      return expr;
+    case 'params':
+      return fail('a param list is only allowed at the start of a pipeline', step);
+    case 'prop':
+      return expr + path(step.path, dot);
+    case 'expr':
+      return expression(step, expr, scope);
+    case 'object':
+      return buildObject(step, expr, scope, ctx, state.safe);
+    case 'tuple':
+      return buildTuple(step, expr, scope, ctx, state.safe);
+    case 'lib': {
+      const { ref, adapter } = ctx.lib(step, ctx);
+      return libCall(ref, adapter, expr, body(step, null, ctx), step.args);
     }
-
-    const op = step.type === 'call' ? ctx.vocabulary[step.name] : undefined;
-
-    if (!op && step.type === 'call' && CAPTURE.test(step.name)) {
-      expr = `${capture(step, ctx)}(${expr})`;
-      continue;
-    }
-
-    if (!op) {
-      const callback = body(step, null, ctx);
-      const hit = step.type === 'call' ? ctx.implicit(step, ctx) : null;
-      // preferred library function, otherwise plain method call
-      expr = hit
-        ? libCall(hit.ref, hit.adapter, expr, callback, step.args)
-        : `${expr}${step.type === 'method' ? path(step.path, dot()) : ''}${dot()}${step.name}(${list(callback, step.args)})`;
-      continue;
-    }
-
-    arity(step, op, 'args');
-    arity(step, op, 'body');
-    if (op.ref && !IDENT.test(expr)) expr = scope.bind(expr);
-    expr = op.emit(expr, step.args, emitContext(step, op, scope, ctx));
+    case 'method':
+      return `${expr}${path(step.path, dot)}${dot}${step.name}(${list(body(step, null, ctx), step.args)})`;
   }
 
-  return expr;
+  const op = ctx.vocabulary[step.name];
+  if (op) {
+    arity(step, op, 'args');
+    arity(step, op, 'body');
+    const input = op.ref && !IDENT.test(expr) ? scope.bind(expr) : expr;
+    return op.emit(input, step.args, emitContext(step, op, scope, ctx));
+  }
+
+  if (CAPTURE.test(step.name)) return `${capture(step, ctx)}(${expr})`;
+
+  // preferred library function, otherwise plain method call
+  const callback = body(step, null, ctx);
+  const hit = ctx.implicit(step, ctx);
+  return hit
+    ? libCall(hit.ref, hit.adapter, expr, callback, step.args)
+    : `${expr}${dot}${step.name}(${list(callback, step.args)})`;
 }
 
 // `(code)` sees the current value as `it`
@@ -419,6 +430,148 @@ function fmtKind({ source, from, to }, ctx) {
   }
 
   return render({ params: ['it'], lines: scope.lines, expr: `\`${out}\`` });
+}
+
+// --- parse --------------------------------------------------------------------------------------
+
+// the inverse of fmt: `{key pipeline}` captures text and runs the pipeline on it, `{}` / `{_}` skip text.
+// groups whose pipeline starts with int / num / float only match numbers, which keeps them apart.
+const NUMBER_GROUP = { int: '([+-]?\\d+)', num: '([+-]?\\d*\\.?\\d+(?:e[+-]?\\d+)?)', float: '([+-]?\\d*\\.?\\d+(?:e[+-]?\\d+)?)' };
+
+function parseKind({ source, from, to }, ctx) {
+  if (ctx.captures) fail('lsd.parse takes no interpolations', { source, start: from });
+  const scope = functionScope('it', false);
+  const fields = [];
+  let pattern = '';
+
+  for (let i = from; i < to; i++) {
+    const ch = source[i];
+    if ((ch === '{' || ch === '}') && source[i + 1] === ch) {
+      pattern += escapeRegex(ch);
+      i++;
+      continue;
+    }
+    if (ch !== '{') {
+      pattern += escapeRegex(ch);
+      continue;
+    }
+
+    const end = scanGroup(source, i, to, (message, pos) => fail(message, { source, start: pos }));
+    const inner = trimRange(source, i + 1, end);
+    const key = /^[A-Za-z_$][\w$]*/.exec(source.slice(inner.from, inner.to))?.[0];
+    if (!key || key === '_') {
+      pattern += '.*?';
+    } else {
+      if (fields.some((field) => field.key === key)) fail(`duplicate field '${key}'`, { source, start: inner.from });
+      const steps = parseRange(source, inner.from + key.length, inner.to);
+      const first = steps[0]?.type === 'call' && steps[0].name;
+      pattern += NUMBER_GROUP[first] ?? '(.*?)';
+      fields.push({ key, steps });
+    }
+    i = end;
+  }
+
+  const match = scope.bind(`/^${pattern}$/s.exec(it)`);
+  scope.lines.push(`if (!${match}) return null;`);
+  const inner = inlineScope(scope);
+  const parts = fields.map(({ key, steps }, index) => `${key}: ${chain(steps, `${match}[${index + 1}]`, inner, ctx)}`);
+  return render({ params: ['it'], lines: scope.lines, expr: `({ ${parts.join(', ')} })` });
+}
+
+const escapeRegex = (text) => text.replace(/[\\^$.*+?()[\]{}|/]/g, '\\$&');
+
+// --- check --------------------------------------------------------------------------------------
+
+// lsd.is grammar, but collects errors instead of returning a boolean:
+// [{ path: 'tags[1]', expected: 'string' }, ...], empty if valid. shapes, scoped paths, `array[...]`
+// and tuples are walked so the path points at the culprit, every other term reports its own text.
+function checkKind(range, ctx) {
+  const steps = parseBody(range);
+  if (steps[0]?.type === 'params') fail('lsd.check takes no param list', steps[0]);
+  const scope = functionScope('it', false);
+  const statements = report(steps, 'it', [], scope, ctx, { n: 0 });
+  return `(it) => { ${[...scope.lines, 'const errors = [];', ...statements, 'return errors;'].join(' ')} }`;
+}
+
+function report(steps, subject, at, scope, ctx, counter) {
+  const push = (where, expected) => `errors.push({ path: ${renderPath(where)}, expected: ${JSON.stringify(expected)} });`;
+
+  // alternatives cannot point at a single culprit: one error for the whole expression
+  if (steps.some((step) => keyword(step, 'or'))) {
+    const expected = steps[0].source.slice(steps[0].start, steps.at(-1).end);
+    return [`if (!${checks(steps, subject, scope, ctx)}) ${push(at, expected)}`];
+  }
+
+  const label = `_c${counter.n++}`;
+  const out = [];
+  // a failed guard skips the remaining terms of this block
+  const guard = (condition, expected) => out.push(`if (!(${condition})) { ${push(at, expected)} break ${label}; }`);
+  let negate = null;
+
+  for (const step of steps) {
+    if (step.type === 'safe') continue;
+    if (keyword(step, 'not')) {
+      negate = negate ? null : step;
+      continue;
+    }
+    if (negate) {
+      guard(checks([negate, step], subject, scope, ctx), negate.source.slice(negate.start, step.end));
+      negate = null;
+      continue;
+    }
+
+    if (step.type === 'object') {
+      guard(`${subject} != null && typeof ${subject} === 'object'`, 'object');
+      for (const entry of parseObjectEntries(step)) {
+        if (entry.spread) fail('spread is not supported in checks', { source: step.source, start: entry.start });
+        const name = entry.ident ? entry.key : entry.key.slice(1, -1);
+        const access = entry.ident ? `${subject}?.${entry.key}` : `${subject}?.[${entry.key}]`;
+        const where = [...at, name];
+        if (!entry.steps) {
+          out.push(`if (${access} === undefined) ${push(where, 'defined')}`);
+          continue;
+        }
+        const inner = report(entry.steps, access, where, scope, ctx, counter);
+        out.push(entry.optional ? `if (${access} !== undefined) { ${inner.join(' ')} }` : inner.join(' '));
+      }
+    } else if (step.type === 'method' && step.body && !step.body.predicate && step.args === null) {
+      const target = `${subject}${path(step.path, '?.')}?.${step.name}`;
+      out.push(...report(parseBody(step.body), target, [...at, ...step.path, step.name], scope, ctx, counter));
+    } else if (step.type === 'call' && step.name === 'array' && step.body && !ctx.predicates.array?.macro) {
+      guard(`Array.isArray(${subject})`, 'array');
+      const index = `_i${counter.n++}`;
+      const inner = report(parseBody(step.body), `${subject}[${index}]`, [...at, { index }], scope, ctx, counter);
+      out.push(`for (let ${index} = 0; ${index} < ${subject}.length; ${index}++) { ${inner.join(' ')} }`);
+    } else if (step.type === 'tuple') {
+      const { items, single } = parseTupleItems(step);
+      if (single) {
+        out.push(...report(items[0] ?? [], subject, at, scope, ctx, counter));
+        continue;
+      }
+      guard(`Array.isArray(${subject}) && ${subject}.length === ${items.length}`, `tuple of ${items.length}`);
+      items.forEach((item, index) => out.push(...report(item, `${subject}[${index}]`, [...at, { index }], scope, ctx, counter)));
+    } else {
+      guard(checks([step], subject, scope, ctx), step.source.slice(step.start, step.end));
+    }
+  }
+
+  if (negate) fail("dangling 'not'", negate);
+  return out.length ? [`${label}: { ${out.join(' ')} }`] : [];
+}
+
+// ['user', 'tags', { index: '_i0' }] -> `user.tags[${_i0}]`
+function renderPath(segments) {
+  let dynamic = false;
+  const text = segments
+    .map((segment, position) => {
+      if (typeof segment === 'object') {
+        dynamic = true;
+        return `[\${${segment.index}}]`;
+      }
+      return position ? `.${segment}` : segment;
+    })
+    .join('');
+  return dynamic ? `\`${text}\`` : JSON.stringify(text);
 }
 
 // --- shared -------------------------------------------------------------------------------------

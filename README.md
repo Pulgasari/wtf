@@ -190,6 +190,34 @@ lsd.fmt`{.w}${unit} x {.h}${unit}`;   // captures are values in fmt
 lsd.fn('map[fmt[{.first} {.last}]]');
 ```
 
+## `parse`
+
+the inverse of `fmt`: text in, object out, `null` if the text does not match.
+
+```js
+const person = lsd.parse('{name} ({age int})');
+person('bo (30)');   // { name: 'bo', age: 30 }
+// (it) => { const _0 = /^(.*?) \(([+-]?\d+)\)$/s.exec(it); if (!_0) return null; return ({ name: _0[1], age: Number.parseInt(_0[2], 10) }); }
+
+lsd.parse("{_}: {tags split(',') map[trim]}")('k: a, b');   // { tags: ['a', 'b'] }
+```
+
+`{key pipeline}` captures, `{}` / `{_}` skip text. fields starting with `int`, `num` or `float` only match numbers,
+which keeps adjacent fields apart: `lsd.parse('{a}{b int}')('x12')` -> `{ a: 'x', b: 12 }`.
+
+## `check`
+
+`lsd.is` grammar, but returns what failed and where:
+
+```js
+const check = lsd.check('{ name: string filled, age?: integer gte(0), tags: array[string] }');
+check({ name: '', age: -1, tags: ['a', 2] });
+// [{ path: 'name', expected: 'filled' }, { path: 'age', expected: 'gte(0)' }, { path: 'tags[1]', expected: 'string' }]
+```
+
+shapes, `.path[...]`, `array[...]` and tuples are walked, every other term reports its own text. alternatives
+(`string or nil`) report as a whole, the first failing term of a chain wins.
+
 ## `$`
 
 argument-free pipelines as property chain, compiled like `fn`:
@@ -352,7 +380,7 @@ const result = compile(source, { filename, ops, libs, prefer, libExports, source
 // -> { code, map, compiled } | null
 ```
 
-- `lsd.fn`, `is`, `cmp`, `match`, `fmt`, `$` chains and `guess` with static input get compiled, dynamic ones
+- `lsd.fn`, `is`, `cmp`, `match`, `fmt`, `parse`, `check`, `$` chains and `guess` with static input get compiled, dynamic ones
   stay runtime calls and warn.
 - spec errors fail the build with `file:line:column` and a caret into the spec.
 - args are injected verbatim, the generated function is re-parsed to catch broken args early.
@@ -362,6 +390,7 @@ const result = compile(source, { filename, ops, libs, prefer, libExports, source
 ```js
 lsd.code('trim toLowerCase');       // '(it) => it.trim().toLowerCase()'
 lsd.code('.age desc', 'cmp');       // any factory
+lsd.explain('trim lower');          // { code, steps: [{ step: 'trim', expr: 'it.trim()' }, ...] }
 ```
 
 see [docs/lsd-concepts.md](docs/lsd-concepts.md) for where this could go next.

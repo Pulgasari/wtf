@@ -68,6 +68,12 @@ export interface Lsd {
   match: LsdFactory<(value: any) => any>;
   /** string template: `lsd.fmt('{.first} {.last upper}')` */
   fmt: LsdFactory<(value: any) => string>;
+  /** the inverse of fmt: `lsd.parse('{name} ({age int})')('bo (30)')` -> `{ name: 'bo', age: 30 }`, null if no match */
+  parse: (spec: string) => (text: string) => Record<string, any> | null;
+  /** lsd.is grammar, returns the errors with paths, empty if valid */
+  check: LsdFactory<(value: any) => Array<{ path: string; expected: string }>>;
+  /** what every top-level step of a fn spec turned into */
+  explain(spec: string): { code: string; steps: Array<{ step: string; expr: string }> };
   /** property chain of argument-free steps: `lsd.$.trim.lower` */
   $: LsdChain;
   /** programming by example: `lsd.guess({ ' A ': 'a' })` */
@@ -76,7 +82,7 @@ export interface Lsd {
     spec(examples: Record<string, unknown> | Array<[unknown, unknown]>, options?: LsdGuessOptions): string;
   };
   /** returns the generated source for a spec */
-  code(spec: string, kind?: 'fn' | 'is' | 'cmp' | 'match' | 'fmt'): string;
+  code(spec: string, kind?: 'fn' | 'is' | 'cmp' | 'match' | 'fmt' | 'parse' | 'check'): string;
   /** extends the runtime vocabulary. the compiler needs the same ops via its `ops` option */
   define(name: string, op: LsdOpLike): void;
   define(ops: Record<string, LsdOpLike>): void;

@@ -196,3 +196,57 @@ test('compiler: lsd.guess runs at build time', () => {
   );
   assert.throws(() => compile(src("import { lsd } from 'wtf.js';", "lsd.guess({ a: 'zzz' });")), /no pipeline found/);
 });
+
+test('lsd.parse is the inverse of fmt', () => {
+  const person = lsd.parse('{name} ({age int})');
+  assert.deepEqual(person('bo (30)'), { name: 'bo', age: 30 });
+  assert.equal(person('nope'), null);
+  // numeric groups keep adjacent fields apart
+  assert.deepEqual(lsd.parse('{a}{b int}')('x12'), { a: 'x', b: 12 });
+  // {} and {_} skip text, pipelines run on the captured string
+  assert.deepEqual(lsd.parse("{_}: {tags split(',') map[trim]} [{}]")('k: a, b [z]'), { tags: ['a', 'b'] });
+  assert.deepEqual(lsd.parse('{{{key}}}')('{x}'), { key: 'x' });
+  assert.throws(() => lsd.parse('{a} {a}'), /duplicate field 'a'/);
+  // round trip
+  const fmt = lsd.fmt('{.name} ({.age})');
+  assert.deepEqual(person(fmt({ name: 'al', age: 7 })), { name: 'al', age: 7 });
+});
+
+test('lsd.check reports paths', () => {
+  const check = lsd.check(
+    '{ name: string filled, age?: integer gte(0), tags: array[string], meta: { id }, role: string or nil }',
+  );
+  assert.deepEqual(check({ name: '', age: -1, tags: ['a', 2], meta: {}, role: 3 }), [
+    { path: 'name', expected: 'filled' },
+    { path: 'age', expected: 'gte(0)' },
+    { path: 'tags[1]', expected: 'string' },
+    { path: 'meta.id', expected: 'defined' },
+    { path: 'role', expected: 'string or nil' },
+  ]);
+  assert.deepEqual(check({ name: 'x', tags: [], meta: { id: 1 } }), []);
+  assert.deepEqual(check(null), [{ path: '', expected: 'object' }]);
+  assert.deepEqual(lsd.check('[string, number]')(['a', 'b']), [{ path: '[1]', expected: 'number' }]);
+  assert.deepEqual(lsd.check('not nil')(null), [{ path: '', expected: 'not nil' }]);
+  assert.deepEqual(lsd.check('.user.name[string]')({}), [{ path: 'user.name', expected: 'string' }]);
+  // macros report their own name
+  lsd.is.define('adult', '.age[gte(18)]');
+  assert.deepEqual(lsd.check('{ p: adult }')({ p: { age: 3 } }), [{ path: 'p', expected: 'adult' }]);
+});
+
+test('lsd.explain', () => {
+  assert.deepEqual(lsd.explain('trim lower { a: .length }'), {
+    code: '(it) => { const _0 = it.trim().toLowerCase(); return ({ a: _0.length }); }',
+    steps: [
+      { step: 'trim', expr: 'it.trim()' },
+      { step: 'lower', expr: 'it.trim().toLowerCase()' },
+      { step: '{ a: .length }', expr: '({ a: _0.length })' },
+    ],
+  });
+});
+
+test('compiler: parse and check', async () => {
+  const parse = await built("lsd.parse('{name} ({age int})')");
+  assert.deepEqual(parse('bo (30)'), { name: 'bo', age: 30 });
+  const check = await built("lsd.check('{ tags: array[string] }')");
+  assert.deepEqual(check({ tags: [1] }), [{ path: 'tags[0]', expected: 'string' }]);
+});

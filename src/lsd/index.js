@@ -3,7 +3,7 @@
 // both paths share parse + generate, so the semantics are identical.
 
 import { joinTemplate, LsdSyntaxError } from './parse.js';
-import { generateKind } from './generate.js';
+import { generateKind, explain as explainSpec } from './generate.js';
 import { builtins, createVocabularyOf, normalizeOp } from './ops.js';
 import { predicates as builtinPredicates } from './predicates.js';
 import { createAdapters, resolveAdapter, didYouMean } from './libs.js';
@@ -50,15 +50,11 @@ function resolveImplicit(step) {
   return null;
 }
 
+const options = (captures = 0) => ({ vocabulary, predicates, captures, lib: resolveLib, implicit: resolveImplicit });
+
 function source(kind, spec, captures = 0) {
   if (typeof spec !== 'string') throw new TypeError(`lsd: spec must be a string, got ${typeof spec}`);
-  return generateKind(kind, spec, {
-    vocabulary,
-    predicates,
-    captures,
-    lib: resolveLib,
-    implicit: resolveImplicit,
-  });
+  return generateKind(kind, spec, options(captures));
 }
 
 // every factory works with a string spec or as tagged template (interpolations are captured)
@@ -155,9 +151,13 @@ export const lsd = {
   cmp: factory('cmp'),
   match: factory('match'),
   fmt: factory('fmt'),
+  parse: factory('parse'),
+  check: factory('check'),
   $: chainProxy([]),
   guess,
   code: (spec, kind = 'fn') => source(kind, spec),
+  // { code, steps: [{ step, expr }] }: what every top-level step of a fn spec turned into
+  explain: (spec) => explainSpec(spec, options()),
   define,
   use,
   prefer,

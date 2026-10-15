@@ -21,7 +21,7 @@
 // args are raw javascript source and are injected verbatim into the generated code.
 //
 // bracket contents (bodies, objects, tuples) are kept as ranges { source, from, to }, the factory
-// that consumes them decides about their grammar. every step carries its `source` and `start`
+// that consumes them decides about their grammar. every step carries its `source`, `start` and `end`
 // so errors point into the right string, even for macros.
 
 const IDENT_START = /[A-Za-z_$]/;
@@ -158,6 +158,8 @@ export function parseRange(source, from, to) {
         steps.push(readSuffixes({ type: 'call', name, args: null, body: null, source, start }));
       }
     }
+
+    steps.at(-1).end = i;
 
     if (i < to && !SPACE.test(source[i]) && source[i] !== '.') {
       fail(`unexpected character '${source[i]}', steps must be separated by whitespace`);
