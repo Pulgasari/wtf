@@ -1,9 +1,11 @@
-// the predicate vocabulary for lsd.is (and `?[...]` callbacks, `is[...]`, match conditions).
-// same op shape as ops.js, but emit returns a boolean expression. `x` may be used repeatedly,
+// builtin checks for lsd.is / lsd.check (and `?[...]` callbacks, `is[...]`, match conditions).
+// same op shape as fn ops (vocabulary.js), but emit returns a boolean expression. `x` may be used repeatedly,
 // the generator only ever passes identifiers or side-effect free property paths.
 // a spec string is a macro in predicate grammar: `filled: 'not empty'`.
 
-const op = (emit, options = {}) => ({ emit, ref: false, args: 'none', body: 'none', bodyKind: 'is', ...options });
+import { defineOp } from './vocabulary.js';
+
+const op = (emit, options = {}) => defineOp(emit, { bodyKind: 'is', ...options });
 const withArgs = (emit) => op(emit, { args: 'required' });
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

@@ -4,13 +4,12 @@
 
 import { joinTemplate, LsdSyntaxError } from './parse.js';
 import { generateKind, explain as explainSpec } from './generate.js';
-import { builtins, createVocabularyOf, normalizeOp } from './ops.js';
-import { predicates as builtinPredicates } from './predicates.js';
+import { createVocabularies } from './ops.js';
+import { normalizeOp } from './vocabulary.js';
 import { createAdapters, resolveAdapter, didYouMean } from './libs.js';
 import { guess as search } from './guess.js';
 
-const vocabulary = createVocabularyOf('fn', [builtins]);
-const predicates = createVocabularyOf('is', [builtinPredicates]);
+const { vocabulary, predicates } = createVocabularies();
 const adapterConfig = {};
 let adapters = createAdapters();
 let preferred = [];
