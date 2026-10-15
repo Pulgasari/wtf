@@ -4,6 +4,8 @@ export interface CompileOptions {
   filename?: string;
   /** additional ops, merged over the builtins */
   ops?: Record<string, LsdOpLike>;
+  /** additional checks for lsd.is, merged over the builtins */
+  predicates?: Record<string, LsdOpLike>;
   /** library adapters for `lib::name` steps, merged over the builtins (lodash, underscore, ramda, esToolkit, remeda) */
   libs?: Record<string, LsdAdapterLike>;
   /** names outside the vocabulary resolve to these libraries first, needs `libExports` */

@@ -6,17 +6,21 @@
 //                  args  raw args source or null
 //                  body  source of the sub-pipeline as arrow function, or null
 //                  bind  bind(code) -> identifier, hoists code into a temp const of the current function
+//                  helper  like bind, for pure functions: the same code is hoisted only once
+//                  apply   apply(fnCode, x) -> calls a generated arrow on x, inlined where possible
 //                  the result must be safe to chain `.member` onto, so operator-based output wraps itself in parens.
 //   ref            true if `x` is used more than once. the generator then binds the current value first,
 //                  so `x` is always a plain identifier.
 //   args, body     'none' | 'optional' | 'required'
+//   bodyKind       grammar of the `[...]` body: 'fn' (default), 'is', 'cmp', 'match', 'fmt'.
+//                  a `?[...]` body is always 'is'.
 //
 // macro: a spec string, expanded in place. `kebab: 'lodash::kebabCase'`, `clean: 'trim lower'`.
 //   a single-step macro forwards args and body of the call site: `chunk(2)` -> `lodash::chunk(2)`.
 
 import { parse } from './parse.js';
 
-const op = (emit, options = {}) => ({ emit, ref: false, args: 'none', body: 'none', ...options });
+const op = (emit, options = {}) => ({ emit, ref: false, args: 'none', body: 'none', bodyKind: 'fn', ...options });
 
 // three-way compare used by sortBy
 const CMP = '(a < b ? -1 : a > b ? 1 : 0)';
@@ -58,6 +62,13 @@ export const builtins = {
     { body: 'optional' },
   ),
   groupBy: op((x, _args, { body }) => `Object.groupBy(${x}, ${body})`, { body: 'required' }),
+  // order[.age desc, .name] -> sorted copy, body in lsd.cmp grammar
+  order: op((x, _args, { body }) => `${x}.toSorted(${body ?? ''})`, { body: 'optional', bodyKind: 'cmp' }),
+
+  // other grammars applied to the current value
+  is: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'is' }),
+  when: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'match' }),
+  fmt: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'fmt' }),
 
   // objects
   keys: op((x) => `Object.keys(${x})`),
@@ -71,19 +82,24 @@ export const builtins = {
   log: op((x) => `(console.log(${x}), ${x})`, { ref: true }),
 };
 
-// accepts a spec string (macro), the full op shape or a bare emit function
-export function normalizeOp(name, value) {
+// accepts a spec string (macro), the full op shape or a bare emit function.
+// `bodyKind` is the default body grammar: 'fn' for ops, 'is' for predicates.
+export function normalizeOp(name, value, bodyKind = 'fn') {
   if (typeof value === 'string') return { macro: parse(value), source: value };
-  if (typeof value === 'function') return op(value, { args: 'optional', body: 'optional' });
-  if (value && typeof value.emit === 'function') return op(value.emit, value);
+  if (typeof value === 'function') return op(value, { args: 'optional', body: 'optional', bodyKind });
+  if (value && typeof value.emit === 'function') return op(value.emit, { bodyKind, ...value });
   throw new TypeError(`lsd: op '${name}' must be a spec string, a function or { emit }`);
 }
 
 export function createVocabulary(...sources) {
+  return createVocabularyOf('fn', sources);
+}
+
+export function createVocabularyOf(bodyKind, sources) {
   const vocabulary = Object.create(null);
   for (const source of sources) {
     for (const [name, value] of Object.entries(source ?? {})) {
-      vocabulary[name] = normalizeOp(name, value);
+      vocabulary[name] = normalizeOp(name, value, bodyKind);
     }
   }
   return vocabulary;

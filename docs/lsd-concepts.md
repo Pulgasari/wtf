@@ -24,7 +24,7 @@ onto library functions via macros, so the vocabulary grows without lsd owning th
 - ~~export checks at build time with a "did you mean" for typos~~ (done, runtime too).
 - `prefer` per name class: only for names that are not common prototype methods, so `trim` stays native.
 
-## 2. shape builders
+## 2. shape builders (done)
 
 pipelines map one value to one value. a lot of glue code builds objects:
 
@@ -36,7 +36,7 @@ lsd.fn('omit(password)');
 
 the generator already produces expressions, an object literal of sub-pipelines fits in naturally.
 
-## 3. more factories than `fn`
+## 3. more factories than `fn` (done: is, cmp, match, fmt, $, guess)
 
 same compiler, different output shape:
 
@@ -46,7 +46,7 @@ same compiler, different output shape:
 | `lsd.cmp`  | `lsd.cmp('.age desc, .name')`   | comparator for `sort`                   |
 | `lsd.key`  | `lsd.key('.user.id str')`       | key extractor for `groupBy` / `Map`     |
 
-## 4. null safety as a mode
+## 4. null safety as a mode (done: `?` step)
 
 `lsd.fn('?.user.name trim or("anon")')` or a `safe` flag that switches every step to optional chaining.
 cheap to implement in the generator, removes a whole class of tiny defensive helpers.
@@ -101,8 +101,18 @@ the build only ever reads the lockfile. new or changed specs require an explicit
 
 1. ~~sub-pipelines `[...]`~~, ~~libraries + presets~~
 2. ~~tagged templates for captures~~, ~~expression steps and params~~
-3. `lsd.is` / `lsd.cmp`
+3. ~~`lsd.is` / `lsd.cmp` / `lsd.match` / `lsd.fmt` / builders / `lsd.$` / `lsd.guess`~~
 4. shared config + strict mode
 5. hoisting / virtual module
 6. types
 7. natural language + lockfile
+
+## 11. ideas after the factories
+
+- `lsd.guess` with types: derive candidates from the example types and allow args from the examples
+  (`split` with the most common separator in the input).
+- `lsd.is` as validator with messages: `lsd.check(spec)` returning the failing path instead of `false`.
+- `lsd.parse`: the inverse of `fmt`, `lsd.parse('{name} ({age int})')('bo (30)')` -> `{ name, age }`.
+- `lsd.$` with args via call-before-access: `lsd.$.split(',').map.trim` (needs the build step to
+  disambiguate calls, at runtime a call is always the final call).
+- explain mode: `lsd.explain('trim lower')` -> table of steps and the code each one produced.

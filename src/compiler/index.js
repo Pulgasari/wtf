@@ -4,9 +4,11 @@
 import { parse as parseJs, parseExpressionAt } from 'acorn';
 import { ancestor, full } from 'acorn-walk';
 import MagicString from 'magic-string';
-import { parse, joinTemplate, LsdSyntaxError } from '../lsd/parse.js';
-import { generate } from '../lsd/generate.js';
-import { builtins, createVocabulary } from '../lsd/ops.js';
+import { joinTemplate, LsdSyntaxError } from '../lsd/parse.js';
+import { generateKind, KINDS } from '../lsd/generate.js';
+import { builtins, createVocabularyOf } from '../lsd/ops.js';
+import { predicates as builtinPredicates } from '../lsd/predicates.js';
+import { guess } from '../lsd/guess.js';
 import { createAdapters, resolveAdapter, didYouMean } from '../lsd/libs.js';
 
 export { loadLibExports } from './exports.js';
@@ -55,6 +57,7 @@ export function compile(source, options = {}) {
   const {
     filename,
     ops,
+    predicates,
     libs,
     prefer = [],
     libExports = {},
@@ -70,16 +73,17 @@ export function compile(source, options = {}) {
   if (!imports.length) return null;
 
   const locals = new Set(imports.map((entry) => entry.local));
-  const vocabulary = createVocabulary(builtins, ops);
+  const vocabulary = createVocabularyOf('fn', [builtins, ops]);
+  const checks = createVocabularyOf('is', [builtinPredicates, predicates]);
   const libImports = createLibImports(createAdapters(libs), ast, { prefer, libExports });
   const out = new MagicString(source);
   let compiled = 0;
 
-  const build = (node, spec, captures) => {
+  const build = (node, kind, spec, captures) => {
     try {
-      const fnCode = generate(parse(spec), {
+      const fnCode = generateKind(kind, spec, {
         vocabulary,
-        spec,
+        predicates: checks,
         captures,
         lib: libImports.resolve,
         implicit: libImports.implicit,
@@ -91,6 +95,10 @@ export function compile(source, options = {}) {
     }
   };
 
+  // single steps for lsd.guess, evaluated at build time
+  const buildStep = (spec) =>
+    new Function('$libs', `return ${generateKind('fn', spec, { vocabulary, predicates: checks })}`)({});
+
   const done = (local) => {
     compiled++;
     imports.find((entry) => entry.local === local).replaced++;
@@ -99,11 +107,13 @@ export function compile(source, options = {}) {
   ancestor(ast, {
     // lsd.fn`spec ${value}` -> (($0) => fn)(value), captures are evaluated once, like at runtime
     TaggedTemplateExpression(node, _state, ancestors) {
-      const local = matchFn(node.tag, locals);
-      if (!local) return;
+      const match = matchFactory(node.tag, locals);
+      if (!match) return;
+      const { local, kind } = match;
 
       const { quasis, expressions } = node.quasi;
-      const fnCode = build(node, joinTemplate(quasis.map((quasi) => quasi.value.raw)), expressions.length);
+      const raw = quasis.map((quasi) => quasi.value.raw);
+      const fnCode = build(node, kind, joinTemplate(raw, kind), expressions.length);
 
       if (!expressions.length) {
         out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
@@ -120,20 +130,54 @@ export function compile(source, options = {}) {
     },
 
     CallExpression(node, _state, ancestors) {
-      const local = matchFn(node.callee, locals);
-      if (!local) return;
+      if (matchGuess(node.callee, locals)) {
+        const local = node.callee.object.name;
+        const [examples, options = {}] = node.arguments.map(staticValue);
+        if (examples === NOT_STATIC || options === NOT_STATIC || node.arguments.length > 2) {
+          onWarn(`${filename ?? '<input>'}:${node.loc.start.line}: ${local}.guess() with dynamic examples stays a runtime call`);
+          return;
+        }
+        let spec;
+        try {
+          spec = guess(examples, buildStep, options);
+        } catch (error) {
+          throw new LsdCompileError(error.message, { filename, loc: node.loc.start, cause: error });
+        }
+        if (spec === null) {
+          throw new LsdCompileError('lsd.guess: no pipeline found for these examples', { filename, loc: node.loc.start });
+        }
+        const fnCode = `/* lsd: ${spec.replace(/\*\//g, '* /')} */ ${build(node, 'fn', spec, 0)}`;
+        out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
+        done(local);
+        return;
+      }
+
+      const match = matchFactory(node.callee, locals);
+      if (!match) return;
+      const { local, kind } = match;
 
       const spec = staticSpec(node.arguments);
       if (spec === null) {
         onWarn(
-          `${filename ?? '<input>'}:${node.loc.start.line}: ${local}.fn() with a dynamic spec stays a runtime call`,
+          `${filename ?? '<input>'}:${node.loc.start.line}: ${local}.${kind}() with a dynamic spec stays a runtime call`,
         );
         return;
       }
 
-      const fnCode = build(node, spec, 0);
+      const fnCode = build(node, kind, spec, 0);
       out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
       done(local);
+    },
+
+    // lsd.$.trim.lower -> fn('trim lower'), only the outermost member of a chain
+    MemberExpression(node, _state, ancestors) {
+      const parent = ancestors[ancestors.length - 2];
+      if (parent?.type === 'MemberExpression' && parent.object === node && !parent.computed) return;
+      const chain = matchChain(node, locals);
+      if (!chain) return;
+      const fnCode = build(node, 'fn', chain.steps.join(' '), 0);
+      out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
+      done(chain.local);
     },
   });
 
@@ -190,9 +234,9 @@ function createLibImports(adapters, ast, { prefer, libExports }) {
     return { ref: entry.local, adapter };
   };
 
-  const resolve = (step, ctx) => {
+  const resolve = (step) => {
     const fail = (message) => {
-      throw new LsdSyntaxError(message, ctx.spec, step.start);
+      throw new LsdSyntaxError(message, step.source, step.start);
     };
     const resolved = resolveAdapter(adapters, step.lib);
     if (!resolved) {
@@ -257,12 +301,70 @@ function importedName(spec) {
   return spec.imported.type === 'Identifier' ? spec.imported.name : spec.imported.value;
 }
 
-// `<local>.fn(...)`, returns the matched local name
-function matchFn(callee, locals) {
+// `<local>.fn`, `<local>.is`, ... -> { local, kind }
+function matchFactory(callee, locals) {
   if (callee.type !== 'MemberExpression' || callee.computed || callee.optional) return null;
   if (callee.object.type !== 'Identifier' || !locals.has(callee.object.name)) return null;
-  if (callee.property.type !== 'Identifier' || callee.property.name !== 'fn') return null;
-  return callee.object.name;
+  if (callee.property.type !== 'Identifier' || !KINDS.includes(callee.property.name)) return null;
+  return { local: callee.object.name, kind: callee.property.name };
+}
+
+// `<local>.guess`, the search runs at build time (lsd.guess({ ' A ': 'a' }) -> spec 'trim lower')
+function matchGuess(callee, locals) {
+  return (
+    callee.type === 'MemberExpression' &&
+    !callee.computed &&
+    callee.object.type === 'Identifier' &&
+    locals.has(callee.object.name) &&
+    callee.property.type === 'Identifier' &&
+    callee.property.name === 'guess'
+  );
+}
+
+const NOT_STATIC = Symbol('not static');
+
+// evaluates literal-only expressions (objects, arrays, strings, numbers, booleans, null, negation)
+function staticValue(node) {
+  switch (node.type) {
+    case 'Literal':
+      return node.regex ? NOT_STATIC : node.value;
+    case 'TemplateLiteral':
+      return node.expressions.length ? NOT_STATIC : node.quasis[0].value.cooked;
+    case 'UnaryExpression': {
+      const value = node.operator === '-' || node.operator === '!' ? staticValue(node.argument) : NOT_STATIC;
+      if (value === NOT_STATIC) return value;
+      return node.operator === '-' ? -value : !value;
+    }
+    case 'ArrayExpression': {
+      const items = node.elements.map((element) => (element && element.type !== 'SpreadElement' ? staticValue(element) : NOT_STATIC));
+      return items.includes(NOT_STATIC) ? NOT_STATIC : items;
+    }
+    case 'ObjectExpression': {
+      const result = {};
+      for (const property of node.properties) {
+        if (property.type !== 'Property' || property.computed || property.kind !== 'init') return NOT_STATIC;
+        const key = property.key.type === 'Identifier' ? property.key.name : property.key.value;
+        const value = staticValue(property.value);
+        if (value === NOT_STATIC) return NOT_STATIC;
+        result[key] = value;
+      }
+      return result;
+    }
+    default:
+      return NOT_STATIC;
+  }
+}
+
+// `<local>.$.a.b.c` -> { local, steps: ['a', 'b', 'c'] }
+function matchChain(node, locals) {
+  const steps = [];
+  let current = node;
+  while (current.type === 'MemberExpression' && !current.computed && !current.optional) {
+    steps.unshift(current.property.name);
+    current = current.object;
+  }
+  if (current.type !== 'Identifier' || !locals.has(current.name) || steps[0] !== '$') return null;
+  return { local: current.name, steps: steps.slice(1) };
 }
 
 // string literal or template literal without expressions, otherwise null
