@@ -7,18 +7,26 @@
 //   .name()         explicit method call, bypasses the vocabulary
 //   .name[spec]     explicit method call with a sub-pipeline as callback
 //   .a.b            property access
+//   (expr)          raw javascript expression, `it` is the current value: `(it + 'px')`
+//   $0              captured value from a tagged template, called with the current value
+//
+// a pipeline may start with a param list: `acc it => (acc + it)`. the pipeline runs on `it`
+// if it is one of the params, otherwise on the first one. without a list the only param is `it`.
 //
 // `(args)` and `[spec]` can be combined on every call-like step: `reduce[...](0)`, in any order.
 // dotted steps may follow the previous step without whitespace: `split(',').length`.
 // args are raw javascript source and are injected verbatim into the generated code.
 //
-// steps: { type: 'call' | 'method' | 'lib' | 'prop', name?, lib?, path?, args: string | null, body: steps | null, start }
+// steps: { type: 'call' | 'method' | 'lib' | 'prop' | 'expr' | 'params', name?, lib?, path?, code?, names?,
+//          args: string | null, body: steps | null, start }
+// a 'params' step can only be the first step of a pipeline.
 
 const IDENT_START = /[A-Za-z_$]/;
 const IDENT_PART = /[\w$]/;
 const SPACE = /\s/;
 
 const CLOSE = { '(': ')', '[': ']', '{': '}' };
+const PARAMS = /^\s*([A-Za-z_$][\w$]*(?:\s*,?\s*[A-Za-z_$][\w$]*)*)\s*=>/;
 
 // chars after which a `/` starts a regex literal rather than a division
 const REGEX_PREFIX = new Set(['(', ',', '[', '{', '=', ':', '!', '&', '|', '?', ';', '+', '-', '*', '%', '<', '>', '~', '^']);
@@ -31,6 +39,12 @@ export class LsdSyntaxError extends SyntaxError {
     this.spec = spec;
     this.pos = pos;
   }
+}
+
+// tagged template parts -> spec, interpolations become captures `$0`, `$1`, ...
+// raw parts are used so regex escapes survive: lsd.fn`replace(/\s+/g, '-')`
+export function joinTemplate(raw) {
+  return raw.map((part, index) => (index ? `$${index - 1}${part}` : part)).join('');
 }
 
 export function parse(spec) {
@@ -69,6 +83,15 @@ function parseRange(spec, from, to) {
     return step;
   };
 
+  const head = PARAMS.exec(spec.slice(from, to));
+  if (head) {
+    const names = head[1].split(/[\s,]+/);
+    const duplicate = names.find((name, index) => names.indexOf(name) !== index);
+    if (duplicate) fail(`duplicate param '${duplicate}'`, from);
+    steps.push({ type: 'params', names, start: from + head[0].indexOf(head[1]) });
+    i = from + head[0].length;
+  }
+
   while (i < to) {
     if (SPACE.test(spec[i])) {
       i++;
@@ -77,7 +100,13 @@ function parseRange(spec, from, to) {
 
     const start = i;
 
-    if (spec[i] === '.') {
+    if (spec[i] === '(') {
+      const end = scanGroup(spec, i, to, fail);
+      const code = spec.slice(i + 1, end).trim();
+      if (!code) fail('empty expression');
+      steps.push({ type: 'expr', code, start });
+      i = end + 1;
+    } else if (spec[i] === '.') {
       // `.a.b` -> property path, `.a.b()` / `.a.b[...]` -> method call on `.a`
       const path = [];
       while (i < to && spec[i] === '.') {

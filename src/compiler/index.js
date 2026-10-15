@@ -4,10 +4,12 @@
 import { parse as parseJs, parseExpressionAt } from 'acorn';
 import { ancestor, full } from 'acorn-walk';
 import MagicString from 'magic-string';
-import { parse, LsdSyntaxError } from '../lsd/parse.js';
+import { parse, joinTemplate, LsdSyntaxError } from '../lsd/parse.js';
 import { generate } from '../lsd/generate.js';
 import { builtins, createVocabulary } from '../lsd/ops.js';
-import { createAdapters, resolveAdapter } from '../lsd/libs.js';
+import { createAdapters, resolveAdapter, didYouMean } from '../lsd/libs.js';
+
+export { loadLibExports } from './exports.js';
 
 const ACORN = { ecmaVersion: 'latest', sourceType: 'module', locations: true, allowHashBang: true };
 
@@ -26,7 +28,14 @@ const BARE_ARROW_OK = {
   ArrowFunctionExpression: (parent, node) => parent.body === node,
   ConditionalExpression: (parent, node) => parent.test !== node,
   ExpressionStatement: () => true,
+  TemplateLiteral: () => true,
 };
+
+// parens around the arrow only where its position needs them
+function wrap(fnCode, node, ancestors) {
+  const parent = ancestors[ancestors.length - 2];
+  return BARE_ARROW_OK[parent?.type]?.(parent, node) ? fnCode : `(${fnCode})`;
+}
 
 export class LsdCompileError extends Error {
   constructor(message, { filename, loc, cause } = {}) {
@@ -43,7 +52,16 @@ export class LsdCompileError extends Error {
  *   null if the source does not import `lsd` from `module`.
  */
 export function compile(source, options = {}) {
-  const { filename, ops, libs, module = 'wtf.js', sourcemap = true, onWarn = () => {} } = options;
+  const {
+    filename,
+    ops,
+    libs,
+    prefer = [],
+    libExports = {},
+    module = 'wtf.js',
+    sourcemap = true,
+    onWarn = () => {},
+  } = options;
 
   if (!source.includes(module)) return null;
 
@@ -53,13 +71,56 @@ export function compile(source, options = {}) {
 
   const locals = new Set(imports.map((entry) => entry.local));
   const vocabulary = createVocabulary(builtins, ops);
-  const libImports = createLibImports(createAdapters(libs), ast);
+  const libImports = createLibImports(createAdapters(libs), ast, { prefer, libExports });
   const out = new MagicString(source);
   let compiled = 0;
 
+  const build = (node, spec, captures) => {
+    try {
+      const fnCode = generate(parse(spec), {
+        vocabulary,
+        spec,
+        captures,
+        lib: libImports.resolve,
+        implicit: libImports.implicit,
+      });
+      validate(fnCode);
+      return fnCode;
+    } catch (error) {
+      throw new LsdCompileError(error.message, { filename, loc: node.loc.start, cause: error });
+    }
+  };
+
+  const done = (local) => {
+    compiled++;
+    imports.find((entry) => entry.local === local).replaced++;
+  };
+
   ancestor(ast, {
+    // lsd.fn`spec ${value}` -> (($0) => fn)(value), captures are evaluated once, like at runtime
+    TaggedTemplateExpression(node, _state, ancestors) {
+      const local = matchFn(node.tag, locals);
+      if (!local) return;
+
+      const { quasis, expressions } = node.quasi;
+      const fnCode = build(node, joinTemplate(quasis.map((quasi) => quasi.value.raw)), expressions.length);
+
+      if (!expressions.length) {
+        out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
+      } else {
+        // keep the interpolated expressions in place (they may contain compiled calls themselves)
+        const names = expressions.map((_, index) => `$${index}`).join(', ');
+        out.overwrite(node.start, expressions[0].start, `((${names}) => ${fnCode})(`);
+        expressions.slice(1).forEach((expression, index) => {
+          out.overwrite(expressions[index].end, expression.start, ', ');
+        });
+        out.overwrite(expressions.at(-1).end, node.end, ')');
+      }
+      done(local);
+    },
+
     CallExpression(node, _state, ancestors) {
-      const local = matchFn(node, locals);
+      const local = matchFn(node.callee, locals);
       if (!local) return;
 
       const spec = staticSpec(node.arguments);
@@ -70,19 +131,9 @@ export function compile(source, options = {}) {
         return;
       }
 
-      let fnCode;
-      try {
-        fnCode = generate(parse(spec), { vocabulary, spec, lib: libImports.resolve });
-        validate(fnCode);
-      } catch (error) {
-        throw new LsdCompileError(error.message, { filename, loc: node.loc.start, cause: error });
-      }
-
-      const parent = ancestors[ancestors.length - 2];
-      const bare = BARE_ARROW_OK[parent?.type]?.(parent, node);
-      out.overwrite(node.start, node.end, bare ? fnCode : `(${fnCode})`);
-      compiled++;
-      imports.find((entry) => entry.local === local).replaced++;
+      const fnCode = build(node, spec, 0);
+      out.overwrite(node.start, node.end, wrap(fnCode, node, ancestors));
+      done(local);
     },
   });
 
@@ -103,36 +154,65 @@ export function compile(source, options = {}) {
   };
 }
 
-// collects `lib::name` steps and turns them into import declarations with collision-free locals
-function createLibImports(adapters, ast) {
+// collects `lib::name` steps and turns them into import declarations with collision-free locals.
+// with known exports (libExports) it checks names and resolves `prefer` lookups.
+function createLibImports(adapters, ast, { prefer, libExports }) {
   const taken = new Set();
   full(ast, (node) => {
     if (node.type === 'Identifier') taken.add(node.name);
   });
 
+  const preferred = prefer.map((name) => {
+    const resolved = resolveAdapter(adapters, name);
+    if (!resolved) throw new LsdCompileError(`prefer: unknown library '${name}'`);
+    const known = libExports[resolved.key];
+    if (!known) {
+      throw new LsdCompileError(
+        `prefer: exports of '${resolved.key}' are unknown, pass them via 'libExports' (see loadLibExports) or use the vite plugin`,
+      );
+    }
+    return { ...resolved, known };
+  });
+
   const entries = new Map();
 
-  const resolve = (step, ctx) => {
-    const resolved = resolveAdapter(adapters, step.lib);
-    if (!resolved) {
-      throw new LsdSyntaxError(`unknown library '${step.lib}', configure it via the 'libs' option`, ctx.spec, step.start);
-    }
-    const { key, adapter } = resolved;
-    if (!adapter.module) {
-      throw new LsdSyntaxError(`library '${key}' has no module configured`, ctx.spec, step.start);
-    }
-
-    const specifier = typeof adapter.module === 'function' ? adapter.module(step.name) : adapter.module;
-    const id = `${specifier}#${adapter.named ? step.name : 'default'}`;
+  const entryFor = (key, adapter, name) => {
+    const specifier = typeof adapter.module === 'function' ? adapter.module(name) : adapter.module;
+    const id = `${specifier}#${adapter.named ? name : 'default'}`;
     let entry = entries.get(id);
     if (!entry) {
-      let local = `__lsd_${key}_${step.name}`;
+      let local = `__lsd_${key}_${name}`;
       while (taken.has(local)) local = `_${local}`;
       taken.add(local);
-      entry = { specifier, name: step.name, named: adapter.named, local };
+      entry = { specifier, name, named: adapter.named, local };
       entries.set(id, entry);
     }
     return { ref: entry.local, adapter };
+  };
+
+  const resolve = (step, ctx) => {
+    const fail = (message) => {
+      throw new LsdSyntaxError(message, ctx.spec, step.start);
+    };
+    const resolved = resolveAdapter(adapters, step.lib);
+    if (!resolved) {
+      const known = Object.keys(adapters);
+      fail(`unknown library '${step.lib}'${didYouMean(step.lib, known)}, configure it via the 'libs' option`);
+    }
+    const { key, adapter } = resolved;
+    if (!adapter.module) fail(`library '${key}' has no module configured`);
+    const known = libExports[key];
+    if (known && !known.has(step.name)) {
+      fail(`'${step.name}' is not exported by '${key}'${didYouMean(step.name, known)}`);
+    }
+    return entryFor(key, adapter, step.name);
+  };
+
+  const implicit = (step) => {
+    for (const { key, adapter, known } of preferred) {
+      if (known.has(step.name)) return entryFor(key, adapter, step.name);
+    }
+    return null;
   };
 
   // one declaration per module: `import { a as __lsd_x_a, b as __lsd_x_b } from 'x';`
@@ -149,6 +229,7 @@ function createLibImports(adapters, ast) {
 
   return {
     resolve,
+    implicit,
     code,
     get size() {
       return entries.size;
@@ -177,8 +258,7 @@ function importedName(spec) {
 }
 
 // `<local>.fn(...)`, returns the matched local name
-function matchFn(node, locals) {
-  const { callee } = node;
+function matchFn(callee, locals) {
   if (callee.type !== 'MemberExpression' || callee.computed || callee.optional) return null;
   if (callee.object.type !== 'Identifier' || !locals.has(callee.object.name)) return null;
   if (callee.property.type !== 'Identifier' || callee.property.name !== 'fn') return null;

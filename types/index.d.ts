@@ -33,7 +33,9 @@ export type LsdAdapterLike = LsdAdapter | string;
 
 export interface Lsd {
   /** builds a helper function from a spec, e.g. `lsd.fn('trim lower')` */
-  fn<I = any, O = any>(spec: string): (value: I) => O;
+  fn<I = any, O = any>(spec: string): (value: I, ...rest: any[]) => O;
+  /** tagged template, interpolations are captured: lsd.fn`or(${fallback}) trim` */
+  fn<I = any, O = any>(strings: TemplateStringsArray, ...values: unknown[]): (value: I, ...rest: any[]) => O;
   /** returns the generated source for a spec */
   code(spec: string): string;
   /** extends the runtime vocabulary. the compiler needs the same ops via its `ops` option */
@@ -41,6 +43,8 @@ export interface Lsd {
   define(ops: Record<string, LsdOpLike>): void;
   /** registers a library object for `name::fn` steps at runtime */
   use(name: string, lib: object, adapter?: LsdAdapter): void;
+  /** names outside the vocabulary resolve to these libraries first, no arguments switches it off */
+  prefer(...names: string[]): void;
 }
 
 export declare const lsd: Lsd;

@@ -8,20 +8,21 @@ compiler and runtime. everything below builds on that pipeline without changing 
 `map[trim lower]`, `sortBy[.name lower]`, `lodash::groupBy[.type]`. a `[spec]` suffix is parsed recursively
 and passed as a unary arrow callback. open points:
 
-- callbacks with more than one param (`reduce`), e.g. `reduce[(acc, x) => ...]` or named params `[acc x: ...]`.
-- `it` / `$` placeholder to use the value somewhere other than as the receiver: `map[it + 'px']`.
+- ~~callbacks with more than one param~~: `reduce[acc it => (acc + it)](0)`.
+- ~~`it` placeholder~~: expression steps `(it + 'px')`.
 
 ## 1b. libraries (done)
 
 `lib::name` resolves to a named import (build) or a registered object (runtime). presets map lsd names
 onto library functions via macros, so the vocabulary grows without lsd owning the code. next steps:
 
-- implicit lookup: `lsd({ prefer: ['lodash'] })` resolves unknown names against the library exports
+- ~~implicit lookup~~ (done): `lsd({ prefer: ['lodash'] })` resolves unknown names against the library exports
   (the compiler can import the module at build time and check `name in exports`) before falling back
   to a method call. explicit `lib::` stays available for disambiguation.
 - more presets: `es-toolkit` (smaller, modern), `remeda`, `ramda`, date libraries (`date-fns::format('yyyy')`).
 - ops that are just helper imports from wtf.js itself, for the few things no library does well.
-- export checks at build time with a "did you mean" for typos (`lodash::kebabcase`).
+- ~~export checks at build time with a "did you mean" for typos~~ (done, runtime too).
+- `prefer` per name class: only for names that are not common prototype methods, so `trim` stays native.
 
 ## 2. shape builders
 
@@ -50,16 +51,12 @@ same compiler, different output shape:
 `lsd.fn('?.user.name trim or("anon")')` or a `safe` flag that switches every step to optional chaining.
 cheap to implement in the generator, removes a whole class of tiny defensive helpers.
 
-## 5. captured values
+## 5. captured values (done via tagged templates)
 
-args are injected verbatim, so in compiled code `or(fallback)` closes over the outer `fallback`,
-while the runtime path (`new Function`) cannot see it. two clean options:
-
-- forbid free identifiers in args (compiler checks the args ast, runtime throws the same error).
-- tagged templates: ``lsd.fn`or(${fallback}) trim` `` -> captured values become real parameters,
-  identical in both paths.
-
-the tagged template version is nicer and keeps parity.
+``lsd.fn`or(${fallback}) trim` `` captures values as real params, identical in both paths.
+left over: plain string specs still close over outer identifiers in compiled code but not at runtime.
+the compiler could warn about free identifiers in the generated function (walk the ast, subtract params,
+temps, captures and known globals) and suggest the tagged template.
 
 ## 6. one vocabulary, one config
 
@@ -103,7 +100,7 @@ the build only ever reads the lockfile. new or changed specs require an explicit
 ## suggested order
 
 1. ~~sub-pipelines `[...]`~~, ~~libraries + presets~~
-2. tagged templates for captures (fixes the only semantic gap between runtime and build)
+2. ~~tagged templates for captures~~, ~~expression steps and params~~
 3. `lsd.is` / `lsd.cmp`
 4. shared config + strict mode
 5. hoisting / virtual module

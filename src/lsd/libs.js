@@ -55,3 +55,37 @@ export function libCall(ref, adapter, value, callback, args) {
   const list = adapter.order === 'data-last' ? [...rest, value] : [value, ...rest];
   return `${ref}(${list.join(', ')})`;
 }
+
+// closest candidate for typo hints: case-insensitive match first, then edit distance <= 2
+export function suggest(name, candidates) {
+  const lower = name.toLowerCase();
+  let best = null;
+  let bestDistance = 3;
+  for (const candidate of candidates) {
+    if (candidate.toLowerCase() === lower) return candidate;
+    const distance = levenshtein(lower, candidate.toLowerCase());
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+export function didYouMean(name, candidates) {
+  const hit = suggest(name, candidates);
+  return hit ? `, did you mean '${hit}'?` : '';
+}
+
+function levenshtein(a, b) {
+  if (Math.abs(a.length - b.length) > 2) return Infinity;
+  let row = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[b.length];
+}
