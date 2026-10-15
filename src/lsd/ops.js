@@ -6,6 +6,9 @@ import { predicates } from './predicates.js';
 // three-way compare used by sortBy (and lsd.cmp)
 export const CMP = '(x, y) => (x < y ? -1 : x > y ? 1 : 0)';
 
+// runs a body of another grammar on the current value: is[...], when[...], fmt[...]
+const grammar = (bodyKind) => op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind });
+
 export const builtins = {
   // strings
   lower: op((x) => `${x}.toLowerCase()`),
@@ -48,9 +51,9 @@ export const builtins = {
   order: op((x, _args, { body }) => `${x}.toSorted(${body ?? ''})`, { body: 'optional', bodyKind: 'cmp' }),
 
   // other grammars applied to the current value
-  is: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'is' }),
-  when: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'match' }),
-  fmt: op((x, _args, { body, apply }) => apply(body, x), { body: 'required', bodyKind: 'fmt' }),
+  is: grammar('is'),
+  when: grammar('match'),
+  fmt: grammar('fmt'),
 
   // objects
   keys: op((x) => `Object.keys(${x})`),

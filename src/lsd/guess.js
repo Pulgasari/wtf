@@ -32,24 +32,26 @@ export function guess(examples, compileStep, { maxCost = 6, candidates = CANDIDA
   const matches = (values) => values.every((value, index) => same(value, outputs[index]));
 
   const steps = [...hints.map((spec) => [spec, 1]), ...candidates].map(([spec, cost]) => ({ spec, cost, fn: compileStep(spec) }));
-  const buckets = [[{ specs: [], values: inputs }]];
+  const buckets = [[{ specs: [], values: inputs, id: key(inputs) }]];
+  // intermediate results already expanded, identical states are interchangeable
   const seen = new Set();
 
   for (let cost = 0; cost <= maxCost; cost++) {
     for (const state of buckets[cost] ?? []) {
       // the goal test happens on expansion, so the first hit is the cheapest
       if (matches(state.values)) return state.specs.join(' ');
-      const id = key(state.values);
-      if (id !== null) {
-        if (seen.has(id)) continue;
-        seen.add(id);
+      if (state.id !== null) {
+        if (seen.has(state.id)) continue;
+        seen.add(state.id);
       }
       for (const step of steps) {
         const next = cost + step.cost;
         if (next > maxCost) continue;
         const values = state.values.map((value) => run(step.fn, value));
         if (values.includes(MISSING)) continue;
-        (buckets[next] ??= []).push({ specs: [...state.specs, step.spec], values });
+        const id = key(values);
+        if (id !== null && seen.has(id)) continue;
+        (buckets[next] ??= []).push({ specs: [...state.specs, step.spec], values, id });
       }
     }
   }
